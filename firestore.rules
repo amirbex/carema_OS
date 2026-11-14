@@ -1,0 +1,51 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+    
+    // Projects Collection (Root level for sharing)
+    match /projects/{projectId} {
+      allow create: if isSignedIn();
+      // Allow read/update if signed in
+      allow read, update, delete: if isSignedIn();
+      
+      // Tasks Subcollection
+      match /tasks/{taskId} {
+        allow read, write: if isSignedIn();
+      }
+      
+      // Files Subcollection
+      match /files/{fileId} {
+        allow read, write: if isSignedIn();
+      }
+      
+      // Nested subcollections under tasks
+      match /tasks/{taskId}/{nestedCollection}/{documentId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+    
+    // Calendar Events Collection (Root level)
+    match /calendarEvents/{eventId} {
+      allow create: if isSignedIn();
+      allow read, update, delete: if isSignedIn();
+    }
+  }
+}

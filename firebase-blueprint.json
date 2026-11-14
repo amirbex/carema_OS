@@ -14,39 +14,82 @@
     },
     "Project": {
       "title": "Project",
-      "description": "A project managed by the user",
+      "description": "A project owned by a user and optionally shared with members",
       "type": "object",
       "properties": {
-        "userId": { "type": "string" },
-        "name": { "type": "string" },
-        "category": { "type": "string", "enum": ["F&B", "Development", "Consulting", "Personal", "Research"] },
+        "ownerId": { "type": "string", "description": "Firebase uid of the owner" },
+        "members": {
+          "type": "array",
+          "items": { "type": "string", "format": "email" },
+          "description": "Lower-cased emails of everybody who can access the project"
+        },
+        "name": { "type": "string", "maxLength": 200 },
+        "category": {
+          "type": "string",
+          "enum": ["F&B", "Development", "Consulting", "Personal", "Research", "Marketing", "General"]
+        },
         "status": { "type": "string", "enum": ["ACTIVE", "ON_HOLD", "COMPLETED", "CANCELLED"] },
-        "budgetEstimated": { "type": "number" },
-        "budgetSpent": { "type": "number" },
         "startDate": { "type": "string" },
         "endDate": { "type": "string" },
-        "createdAt": { "type": "string" }
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
       },
-      "required": ["userId", "name", "status", "createdAt"]
+      "required": ["ownerId", "members", "name", "createdAt"]
     },
     "Task": {
       "title": "Task",
-      "description": "A task within a project",
+      "description": "A task inside a project",
       "type": "object",
       "properties": {
         "projectId": { "type": "string" },
-        "phaseId": { "type": "string" },
-        "title": { "type": "string" },
+        "title": { "type": "string", "maxLength": 300 },
         "description": { "type": "string" },
-        "priority": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+        "priority": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
         "status": { "type": "string", "enum": ["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"] },
         "dueDate": { "type": "string" },
-        "assignee": { "type": "string" },
+        "assignedTo": { "type": "string" },
         "estimatedHours": { "type": "number" },
         "actualHours": { "type": "number" },
-        "createdAt": { "type": "string" }
+        "totalSubtasks": { "type": "number" },
+        "completedSubtasks": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
       },
       "required": ["projectId", "title", "status", "createdAt"]
+    },
+    "Subtask": {
+      "title": "Subtask",
+      "description": "Checklist item under a task",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["title", "completed", "createdAt"]
+    },
+    "Note": {
+      "title": "Note",
+      "description": "Comment or report attached to a task",
+      "type": "object",
+      "properties": {
+        "content": { "type": "string" },
+        "author": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["content", "createdAt"]
+    },
+    "ProjectFile": {
+      "title": "Project File",
+      "description": "Plain-text knowledge base file used as AI context",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "content": { "type": "string", "maxLength": 900000 },
+        "uploadedBy": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["name", "content", "createdAt"]
     },
     "CalendarEvent": {
       "title": "Calendar Event",
@@ -55,15 +98,15 @@
       "properties": {
         "userId": { "type": "string" },
         "projectId": { "type": "string" },
-        "title": { "type": "string" },
-        "startTime": { "type": "string" },
-        "endTime": { "type": "string" },
+        "title": { "type": "string", "maxLength": 300 },
+        "startTime": { "type": "string", "format": "date-time" },
+        "endTime": { "type": "string", "format": "date-time" },
         "location": { "type": "string" },
-        "description": { "type": "string" },
-        "meetingLink": { "type": "string" },
+        "meetingLink": { "type": "string", "format": "uri" },
+        "agenda": { "type": "string" },
         "createdAt": { "type": "string" }
       },
-      "required": ["userId", "title", "startTime", "endTime", "createdAt"]
+      "required": ["userId", "title", "startTime", "createdAt"]
     }
   },
   "firestore": {
@@ -71,17 +114,29 @@
       "schema": "User",
       "description": "User profiles"
     },
-    "/users/{userId}/projects/{projectId}": {
+    "/projects/{projectId}": {
       "schema": "Project",
-      "description": "Projects belonging to the user"
+      "description": "Projects owned by / shared with the signed-in user"
     },
-    "/users/{userId}/projects/{projectId}/tasks/{taskId}": {
+    "/projects/{projectId}/tasks/{taskId}": {
       "schema": "Task",
       "description": "Tasks belonging to a project"
     },
-    "/users/{userId}/calendarEvents/{eventId}": {
+    "/projects/{projectId}/tasks/{taskId}/subtasks/{subtaskId}": {
+      "schema": "Subtask",
+      "description": "Checklist items of a task"
+    },
+    "/projects/{projectId}/tasks/{taskId}/notes/{noteId}": {
+      "schema": "Note",
+      "description": "Notes and reports attached to a task"
+    },
+    "/projects/{projectId}/files/{fileId}": {
+      "schema": "ProjectFile",
+      "description": "Text files used as AI knowledge base"
+    },
+    "/calendarEvents/{eventId}": {
       "schema": "CalendarEvent",
-      "description": "Calendar events for the user"
+      "description": "Private calendar events of the user"
     }
   }
 }

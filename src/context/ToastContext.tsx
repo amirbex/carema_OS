@@ -1,5 +1,7 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, AlertCircle, Info, X, RotateCcw } from 'lucide-react';
+import { createId } from '../lib/format';
+import { useI18n } from './I18nContext';
 
 export type ToastType = 'success' | 'error' | 'info';
 
@@ -17,74 +19,103 @@ interface ToastContextType {
 }
 
 const ToastContext = createContext<ToastContextType | null>(null);
+const MAX_TOASTS = 4;
 
 export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { t } = useI18n();
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
   const removeToast = useCallback((id: string) => {
-    setToasts(prev => prev.filter(t => t.id !== id));
+    const timer = timers.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      timers.current.delete(id);
+    }
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
   }, []);
 
-  const showToast = useCallback(({ message, type, undoAction, duration = 4000 }: Omit<ToastItem, 'id'>) => {
-    const id = Math.random().toString(36).substring(2, 9);
-    const newToast: ToastItem = { id, message, type, undoAction, duration };
+  const showToast = useCallback(
+    ({ message, type, undoAction, duration = 4_500 }: Omit<ToastItem, 'id'>) => {
+      const id = createId('toast');
+      const toast: ToastItem = { id, message, type, undoAction, duration };
 
-    setToasts(prev => [...prev.slice(-4), newToast]); // keep max 5
+      setToasts((prev) => [...prev, toast].slice(-MAX_TOASTS));
 
-    if (duration > 0) {
-      setTimeout(() => {
-        removeToast(id);
-      }, duration);
-    }
+      if (duration > 0) {
+        timers.current.set(
+          id,
+          setTimeout(() => removeToast(id), duration)
+        );
+      }
+      return id;
+    },
+    [removeToast]
+  );
 
-    return id;
-  }, [removeToast]);
+  // Never leave timers (or state updates) behind after unmount.
+  useEffect(() => {
+    const current = timers.current;
+    return () => {
+      current.forEach((timer) => clearTimeout(timer));
+      current.clear();
+    };
+  }, []);
 
   return (
     <ToastContext.Provider value={{ showToast, removeToast }}>
       {children}
-      {/* Toast Render Area */}
-      <div className="fixed bottom-6 end-6 z-[100] flex flex-col gap-2 pointer-events-none max-w-sm w-full px-4">
-        {toasts.map(toast => {
+      <div
+        className="fixed bottom-6 end-6 z-[100] flex flex-col gap-2 pointer-events-none max-w-sm w-full px-4"
+        role="region"
+        aria-live="polite"
+        aria-atomic="false"
+        aria-label={t('notifications')}
+      >
+        {toasts.map((toast) => {
           const isSuccess = toast.type === 'success';
           const isError = toast.type === 'error';
 
           return (
             <div
               key={toast.id}
-              className={`pointer-events-auto flex items-center justify-between gap-3 p-3.5 rounded-xl border shadow-xl backdrop-blur-md transition-all duration-200 transform translate-y-0 ${
+              role="status"
+              className={`pointer-events-auto flex items-center justify-between gap-3 p-3.5 rounded-xl border shadow-xl backdrop-blur-md toast-enter ${
                 isSuccess
-                  ? 'bg-gray-900/90 border-emerald-500/30 text-emerald-300'
+                  ? 'bg-gray-900/95 border-emerald-500/30 text-emerald-300'
                   : isError
-                  ? 'bg-gray-900/90 border-rose-500/30 text-rose-300'
-                  : 'bg-gray-900/90 border-sky-500/30 text-sky-300'
+                    ? 'bg-gray-900/95 border-rose-500/30 text-rose-300'
+                    : 'bg-gray-900/95 border-sky-500/30 text-sky-300'
               }`}
             >
               <div className="flex items-center gap-2.5 min-w-0">
-                {isSuccess && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
-                {isError && <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />}
-                {!isSuccess && !isError && <Info className="w-4 h-4 text-sky-400 shrink-0" />}
-                <span className="text-xs font-medium text-gray-200 truncate">{toast.message}</span>
+                {isSuccess && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" aria-hidden="true" />}
+                {isError && <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" aria-hidden="true" />}
+                {!isSuccess && !isError && <Info className="w-4 h-4 text-sky-400 shrink-0" aria-hidden="true" />}
+                <span className="text-xs font-medium text-gray-200 break-words">{toast.message}</span>
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
                 {toast.undoAction && (
                   <button
+                    type="button"
                     onClick={() => {
                       toast.undoAction?.();
                       removeToast(toast.id);
                     }}
                     className="flex items-center gap-1 px-2 py-1 text-xs font-medium bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 rounded transition-colors"
                   >
-                    <RotateCcw className="w-3 h-3" />
-                    <span>Undo</span>
+                    <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                    <span>{t('undo')}</span>
                   </button>
                 )}
                 <button
+                  type="button"
                   onClick={() => removeToast(toast.id)}
+                  aria-label={t('close')}
                   className="text-gray-400 hover:text-gray-200 p-1 rounded transition-colors"
                 >
-                  <X className="w-3.5 h-3.5" />
+                  <X className="w-3.5 h-3.5" aria-hidden="true" />
                 </button>
               </div>
             </div>

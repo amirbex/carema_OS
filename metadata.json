@@ -1,6 +1,6 @@
 {
   "name": "CaReMa OS",
-  "description": "Career & Research Manager Operating System with Multimodal AI Agent, Timeline, and Kanban boards.",
+  "description": "Career & Research Manager Operating System with a multimodal AI agent, timeline/calendar and kanban boards.",
   "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -3,14 +3,19 @@ import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-route
 import {
   createUserWithEmailAndPassword,
   GoogleAuthProvider,
-  onAuthStateChanged,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
-  type User,
 } from 'firebase/auth';
 import { Loader2, Eye, EyeOff, Zap } from 'lucide-react';
-import { auth, testConnection } from './lib/firebase';
+import {
+  auth,
+  DEMO_USER,
+  IS_DEMO,
+  subscribeToAuth,
+  testConnection,
+  type SessionUser,
+} from './lib/firebase';
 import { describeAuthError } from './lib/errorHandlers';
 import { I18nProvider, useI18n } from './context/I18nContext';
 import { ToastProvider } from './context/ToastContext';
@@ -61,7 +66,7 @@ function NotFound() {
 
 function AuthWrapper({ children }: { children: React.ReactNode }) {
   const { t } = useI18n();
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<SessionUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [email, setEmail] = useState('');
@@ -73,13 +78,19 @@ function AuthWrapper({ children }: { children: React.ReactNode }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
+    // Static preview: there is no Firebase project and no login at all.
+    if (IS_DEMO) {
+      setUser(DEMO_USER);
+      setLoading(false);
+      return;
+    }
+
     let cancelled = false;
 
     // Never leave a floating promise: the probe is informational only.
     void testConnection();
 
-    const unsubscribe = onAuthStateChanged(
-      auth,
+    const unsubscribe = subscribeToAuth(
       (nextUser) => {
         if (cancelled) return;
         setUser(nextUser);
@@ -169,6 +180,11 @@ function AuthWrapper({ children }: { children: React.ReactNode }) {
       setIsSubmitting(false);
     }
   };
+
+  if (IS_DEMO) {
+    // Demo mode is always authenticated with the synthetic user.
+    return <>{children}</>;
+  }
 
   if (loading) {
     return (
@@ -332,7 +348,7 @@ export default function App() {
       <I18nProvider>
         <ToastProvider>
           <FocusProvider>
-            <BrowserRouter>
+            <BrowserRouter basename={import.meta.env.BASE_URL}>
               <AuthWrapper>
                 <Suspense fallback={<RouteFallback />}>
                   <Routes>

@@ -32,7 +32,7 @@ import {
   startOfMonth as startOfMonthJ,
   subMonths as subMonthsJ,
 } from 'date-fns-jalali';
-import { auth } from '../lib/firebase';
+import { getCurrentUser } from '../lib/firebase';
 import { subscribeEvents, subscribeProjects, subscribeTasks, deleteEvent, type CalendarEvent, type Project, type Task } from '../lib/appData';
 import { describeError } from '../lib/errorHandlers';
 import { useI18n } from '../context/I18nContext';
@@ -69,8 +69,9 @@ export default function TimelineView() {
   const [isAddOpen, setIsAddOpen] = useState(false);
   const taskUnsubs = useRef(new Map<string, () => void>());
 
-  const userId = auth.currentUser?.uid;
-  const email = auth.currentUser?.email ?? null;
+  const currentUser = getCurrentUser();
+  const userId = currentUser?.uid;
+  const email = currentUser?.email ?? null;
 
   // Keep the calendar flavour in sync with the UI language.
   useEffect(() => {

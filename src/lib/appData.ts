@@ -1,5 +1,6 @@
 import {
   addDoc,
+  arrayUnion,
   collection,
   deleteDoc,
   doc,
@@ -11,8 +12,9 @@ import {
   where,
   type Unsubscribe,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { db, IS_DEMO } from './firebase';
 import { handleFirestoreError, OperationType } from './errorHandlers';
+import * as demo from './demoStore';
 
 /* -------------------------------------------------------------------------- */
 /* Types                                                                      */
@@ -60,6 +62,29 @@ export interface CalendarEvent {
   [key: string]: unknown;
 }
 
+export interface Subtask {
+  id: string;
+  title: string;
+  completed?: boolean;
+  createdAt?: unknown;
+}
+
+export interface Note {
+  id: string;
+  content?: string;
+  author?: string;
+  createdAt?: unknown;
+}
+
+export interface ProjectFile {
+  id: string;
+  name: string;
+  content: string;
+  size?: number;
+  uploadedBy?: string;
+  createdAt?: unknown;
+}
+
 export interface WorkspaceContext {
   generatedAt: string;
   calendarEvents: CalendarEvent[];
@@ -70,7 +95,7 @@ export const TASK_STATUSES: TaskStatus[] = ['TODO', 'IN_PROGRESS', 'REVIEW', 'DO
 export const PRIORITIES: Priority[] = ['Low', 'Medium', 'High', 'Critical'];
 
 /* -------------------------------------------------------------------------- */
-/* Projects                                                                   */
+/* Helpers                                                                    */
 /* -------------------------------------------------------------------------- */
 
 export function normalizeEmail(email?: string | null): string {
@@ -80,20 +105,43 @@ export function normalizeEmail(email?: string | null): string {
 export function isProjectMember(project: Pick<Project, 'members'>, email?: string | null): boolean {
   const target = normalizeEmail(email);
   if (!target) return false;
-  return (project.members ?? []).some((m) => normalizeEmail(m) === target);
+  return (project.members ?? []).some((member) => normalizeEmail(member) === target);
 }
 
 export function isProjectOwner(project: Pick<Project, 'ownerId'>, uid?: string | null): boolean {
   return Boolean(uid && project.ownerId === uid);
 }
 
+function byName(a: { name?: string }, b: { name?: string }): number {
+  return String(a.name ?? '').localeCompare(String(b.name ?? ''), undefined, { sensitivity: 'base' });
+}
+
+function byTitle(a: { title?: string }, b: { title?: string }): number {
+  return String(a.title ?? '').localeCompare(String(b.title ?? ''), undefined, { sensitivity: 'base' });
+}
+
+function timeOf(value: unknown): number {
+  if (!value) return 0;
+  if (typeof value === 'string') return new Date(value).getTime() || 0;
+  if (typeof value === 'object' && value !== null && typeof (value as any).toDate === 'function') {
+    return (value as any).toDate().getTime?.() ?? 0;
+  }
+  return 0;
+}
+
+/** Subscribe to a slice of the in-browser demo database. */
+function demoSubscribe<T>(select: (database: demo.DemoDb) => T, onData: (value: T) => void): Unsubscribe {
+  const push = () => onData(select(demo.getDemoDb()));
+  push();
+  return demo.subscribeDemo(push);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Projects                                                                   */
+/* -------------------------------------------------------------------------- */
+
 /**
- * Subscribe to every project the user can see.
- *
- * The original implementation only listened to `members array-contains email`,
- * so a project created without a members array (or owned before a rename)
- * silently disappeared. We now listen to both the owner query and the member
- * query and merge the results by document id.
+ * Subscribe to every project the user can see (owner + shared member).
  */
 export function subscribeProjects(
   uid: string,
@@ -101,6 +149,17 @@ export function subscribeProjects(
   onData: (projects: Project[]) => void,
   onError?: (message: string) => void
 ): Unsubscribe {
+  if (IS_DEMO) {
+    return demoSubscribe(
+      (database) =>
+        database.projects
+          .filter((project) => project.ownerId === uid || isProjectMember(project, email))
+          .map((project) => ({ ...project }) as Project)
+          .sort(byName),
+      onData
+    );
+  }
+
   const buckets: Record<'owner' | 'member', Map<string, Project>> = {
     owner: new Map(),
     member: new Map(),
@@ -111,10 +170,7 @@ export function subscribeProjects(
     for (const bucket of [buckets.owner, buckets.member]) {
       for (const [id, project] of bucket) merged.set(id, project);
     }
-    const list = Array.from(merged.values()).sort((a, b) =>
-      String(a.name ?? '').localeCompare(String(b.name ?? ''), undefined, { sensitivity: 'base' })
-    );
-    onData(list);
+    onData(Array.from(merged.values()).sort(byName));
   };
 
   const fail = (error: unknown, path: string) => {
@@ -160,6 +216,16 @@ export async function createProject(input: {
   category?: string;
 }): Promise<string> {
   const members = Array.from(new Set([normalizeEmail(input.email)].filter(Boolean)));
+
+  if (IS_DEMO) {
+    return demo.demoCreateProject({
+      name: input.name.trim(),
+      category: input.category,
+      ownerId: input.uid,
+      members,
+    });
+  }
+
   const ref = await addDoc(collection(db, 'projects'), {
     name: input.name.trim(),
     category: input.category ?? 'General',
@@ -173,7 +239,10 @@ export async function createProject(input: {
 }
 
 export async function shareProject(projectId: string, email: string): Promise<void> {
-  const { arrayUnion } = await import('firebase/firestore');
+  if (IS_DEMO) {
+    demo.demoShareProject(projectId, normalizeEmail(email));
+    return;
+  }
   await updateDoc(doc(db, 'projects', projectId), {
     members: arrayUnion(normalizeEmail(email)),
     updatedAt: serverTimestamp(),
@@ -182,9 +251,14 @@ export async function shareProject(projectId: string, email: string): Promise<vo
 
 /**
  * Firestore never deletes subcollections automatically, so deleting a project
- * used to leave orphaned tasks/files/notes behind (unreadable and billed).
+ * would leave orphaned tasks/files/notes behind. Demo mode mirrors that.
  */
 export async function deleteProjectCascade(projectId: string): Promise<void> {
+  if (IS_DEMO) {
+    demo.demoDeleteProject(projectId);
+    return;
+  }
+
   const tasksSnap = await getDocs(collection(db, 'projects', projectId, 'tasks'));
 
   for (const taskDoc of tasksSnap.docs) {
@@ -222,13 +296,22 @@ export function subscribeTasks(
   onData: (tasks: Task[]) => void,
   onError?: (message: string) => void
 ): Unsubscribe {
+  if (IS_DEMO) {
+    return demoSubscribe(
+      (database) =>
+        database.tasks
+          .filter((task) => task.projectId === projectId)
+          .map((task) => ({ ...task }) as Task)
+          .sort(byTitle),
+      onData
+    );
+  }
+
   return onSnapshot(
     collection(db, 'projects', projectId, 'tasks'),
     (snapshot) => {
       const tasks = snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as object) })) as Task[];
-      // Stable order: newest first, then title, so optimistic edits don't jump.
-      tasks.sort((a, b) => (a.title ?? '').localeCompare(b.title ?? '', undefined, { sensitivity: 'base' }));
-      onData(tasks);
+      onData(tasks.sort(byTitle));
     },
     (error) => onError?.(handleFirestoreError(error, OperationType.GET, 'projects/tasks'))
   );
@@ -242,6 +325,10 @@ export async function createTask(input: {
   dueDate?: string | null;
   description?: string;
 }): Promise<string> {
+  if (IS_DEMO) {
+    return demo.demoCreateTask(input);
+  }
+
   const ref = await addDoc(collection(db, 'projects', input.projectId, 'tasks'), {
     title: input.title.trim(),
     status: input.status ?? 'TODO',
@@ -256,10 +343,200 @@ export async function createTask(input: {
 }
 
 export async function updateTask(projectId: string, taskId: string, patch: Record<string, unknown>): Promise<void> {
+  if (IS_DEMO) {
+    demo.demoUpdateTask(projectId, taskId, patch);
+    return;
+  }
   await updateDoc(doc(db, 'projects', projectId, 'tasks', taskId), {
     ...patch,
     updatedAt: serverTimestamp(),
+  } as Record<string, any>);
+}
+
+export async function deleteTask(projectId: string, taskId: string): Promise<void> {
+  if (IS_DEMO) {
+    demo.demoDeleteTask(projectId, taskId);
+    return;
+  }
+  await deleteDoc(doc(db, 'projects', projectId, 'tasks', taskId));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Subtasks                                                                   */
+/* -------------------------------------------------------------------------- */
+
+export function subscribeSubtasks(
+  projectId: string,
+  taskId: string,
+  onData: (subtasks: Subtask[]) => void,
+  onError?: (message: string) => void
+): Unsubscribe {
+  if (IS_DEMO) {
+    return demoSubscribe(
+      (database) =>
+        database.subtasks
+          .filter((subtask) => subtask.taskId === taskId)
+          .map((subtask) => ({ ...subtask }) as Subtask)
+          .sort((a, b) => timeOf(a.createdAt) - timeOf(b.createdAt)),
+      onData
+    );
+  }
+
+  return onSnapshot(
+    query(collection(db, 'projects', projectId, 'tasks', taskId, 'subtasks')),
+    (snapshot) => {
+      const subtasks = snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as object) })) as Subtask[];
+      onData(subtasks.sort((a, b) => timeOf(a.createdAt) - timeOf(b.createdAt)));
+    },
+    (error) => onError?.(handleFirestoreError(error, OperationType.LIST, 'tasks/subtasks'))
+  );
+}
+
+export async function addSubtaskRecord(projectId: string, taskId: string, title: string): Promise<void> {
+  if (IS_DEMO) {
+    demo.demoCreateSubtask(projectId, taskId, title);
+    return;
+  }
+  await addDoc(collection(db, 'projects', projectId, 'tasks', taskId, 'subtasks'), {
+    title,
+    completed: false,
+    createdAt: serverTimestamp(),
   });
+}
+
+export async function setSubtaskCompleted(
+  projectId: string,
+  taskId: string,
+  subtaskId: string,
+  completed: boolean
+): Promise<void> {
+  if (IS_DEMO) {
+    demo.demoToggleSubtask(subtaskId, completed);
+    return;
+  }
+  await updateDoc(doc(db, 'projects', projectId, 'tasks', taskId, 'subtasks', subtaskId), { completed });
+}
+
+export async function deleteSubtaskRecord(projectId: string, taskId: string, subtaskId: string): Promise<void> {
+  if (IS_DEMO) {
+    demo.demoDeleteSubtask(subtaskId);
+    return;
+  }
+  await deleteDoc(doc(db, 'projects', projectId, 'tasks', taskId, 'subtasks', subtaskId));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Notes                                                                      */
+/* -------------------------------------------------------------------------- */
+
+export function subscribeNotes(
+  projectId: string,
+  taskId: string,
+  onData: (notes: Note[]) => void,
+  onError?: (message: string) => void
+): Unsubscribe {
+  if (IS_DEMO) {
+    return demoSubscribe(
+      (database) =>
+        database.notes
+          .filter((note) => note.taskId === taskId)
+          .map((note) => ({ ...note }) as Note)
+          .sort((a, b) => timeOf(b.createdAt) - timeOf(a.createdAt)),
+      onData
+    );
+  }
+
+  return onSnapshot(
+    query(collection(db, 'projects', projectId, 'tasks', taskId, 'notes')),
+    (snapshot) => {
+      const notes = snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as object) })) as Note[];
+      onData(notes.sort((a, b) => timeOf(b.createdAt) - timeOf(a.createdAt)));
+    },
+    (error) => onError?.(handleFirestoreError(error, OperationType.LIST, 'tasks/notes'))
+  );
+}
+
+export async function addNoteRecord(
+  projectId: string,
+  taskId: string,
+  content: string,
+  author: string
+): Promise<void> {
+  if (IS_DEMO) {
+    demo.demoCreateNote(projectId, taskId, content, author);
+    return;
+  }
+  await addDoc(collection(db, 'projects', projectId, 'tasks', taskId, 'notes'), {
+    content,
+    author,
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function deleteNoteRecord(projectId: string, taskId: string, noteId: string): Promise<void> {
+  if (IS_DEMO) {
+    demo.demoDeleteNote(noteId);
+    return;
+  }
+  await deleteDoc(doc(db, 'projects', projectId, 'tasks', taskId, 'notes', noteId));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Project files                                                              */
+/* -------------------------------------------------------------------------- */
+
+export function subscribeProjectFiles(
+  projectId: string,
+  onData: (files: ProjectFile[]) => void,
+  onError?: (message: string) => void
+): Unsubscribe {
+  if (IS_DEMO) {
+    return demoSubscribe(
+      (database) =>
+        database.files
+          .filter((file) => file.projectId === projectId)
+          .map((file) => ({ ...file }) as ProjectFile)
+          .sort((a, b) => timeOf(b.createdAt) - timeOf(a.createdAt)),
+      onData
+    );
+  }
+
+  return onSnapshot(
+    collection(db, 'projects', projectId, 'files'),
+    (snapshot) => {
+      const files = snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as object) })) as ProjectFile[];
+      onData(files.sort((a, b) => timeOf(b.createdAt) - timeOf(a.createdAt)));
+    },
+    (error) => onError?.(handleFirestoreError(error, OperationType.GET, 'projects/files'))
+  );
+}
+
+export async function addProjectFile(input: {
+  projectId: string;
+  name: string;
+  content: string;
+  size?: number;
+  uploadedBy?: string;
+}): Promise<void> {
+  if (IS_DEMO) {
+    demo.demoCreateFile(input);
+    return;
+  }
+  await addDoc(collection(db, 'projects', input.projectId, 'files'), {
+    name: input.name,
+    content: input.content,
+    size: input.size ?? input.content.length,
+    uploadedBy: input.uploadedBy ?? '',
+    createdAt: serverTimestamp(),
+  });
+}
+
+export async function deleteProjectFile(projectId: string, fileId: string): Promise<void> {
+  if (IS_DEMO) {
+    demo.demoDeleteFile(fileId);
+    return;
+  }
+  await deleteDoc(doc(db, 'projects', projectId, 'files', fileId));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -271,12 +548,22 @@ export function subscribeEvents(
   onData: (events: CalendarEvent[]) => void,
   onError?: (message: string) => void
 ): Unsubscribe {
+  if (IS_DEMO) {
+    return demoSubscribe(
+      (database) =>
+        database.events
+          .filter((event) => event.userId === uid)
+          .map((event) => ({ ...event }) as CalendarEvent)
+          .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()),
+      onData
+    );
+  }
+
   return onSnapshot(
     query(collection(db, 'calendarEvents'), where('userId', '==', uid)),
     (snapshot) => {
       const events = snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as object) })) as CalendarEvent[];
-      events.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
-      onData(events);
+      onData(events.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()));
     },
     (error) => onError?.(handleFirestoreError(error, OperationType.GET, 'calendarEvents'))
   );
@@ -292,6 +579,19 @@ export async function createEvent(input: {
   agenda?: string;
   projectId?: string;
 }): Promise<string> {
+  if (IS_DEMO) {
+    return demo.demoCreateEvent({
+      userId: input.uid,
+      title: input.title.trim(),
+      startTime: input.startTime,
+      endTime: input.endTime,
+      location: input.location,
+      meetingLink: input.meetingLink,
+      agenda: input.agenda,
+      projectId: input.projectId,
+    });
+  }
+
   const ref = await addDoc(collection(db, 'calendarEvents'), {
     title: input.title.trim(),
     startTime: input.startTime,
@@ -307,6 +607,10 @@ export async function createEvent(input: {
 }
 
 export async function deleteEvent(eventId: string): Promise<void> {
+  if (IS_DEMO) {
+    demo.demoDeleteEvent(eventId);
+    return;
+  }
   await deleteDoc(doc(db, 'calendarEvents', eventId));
 }
 
@@ -316,12 +620,25 @@ export async function deleteEvent(eventId: string): Promise<void> {
 
 const MAX_FILE_CHARS = 4_000;
 
-/**
- * Build a compact snapshot of the user's workspace for the AI endpoints.
- * Shared by the chat view, the live (voice) session and future features so the
- * three copies of this logic can no longer drift apart.
- */
 export async function fetchWorkspaceContext(uid: string, email?: string | null): Promise<WorkspaceContext> {
+  if (IS_DEMO) {
+    const database = demo.getDemoDb();
+    const projects = database.projects
+      .filter((project) => project.ownerId === uid || isProjectMember(project, email))
+      .map((project) => ({
+        ...project,
+        tasks: database.tasks.filter((task) => task.projectId === project.id) as unknown as Task[],
+        files: database.files
+          .filter((file) => file.projectId === project.id)
+          .map((file) => ({ id: file.id, name: file.name, content: file.content.slice(0, MAX_FILE_CHARS) })),
+      }));
+    return {
+      generatedAt: new Date().toISOString(),
+      calendarEvents: database.events.filter((event) => event.userId === uid) as unknown as CalendarEvent[],
+      projects,
+    };
+  }
+
   const [eventsSnap, ownerSnap] = await Promise.all([
     getDocs(query(collection(db, 'calendarEvents'), where('userId', '==', uid))),
     getDocs(query(collection(db, 'projects'), where('ownerId', '==', uid))),

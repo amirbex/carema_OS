@@ -29,13 +29,13 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { auth, db } from '../lib/firebase';
-import { deleteDoc, doc } from 'firebase/firestore';
+import { getCurrentUser } from '../lib/firebase';
 import { describeError } from '../lib/errorHandlers';
 import {
   createProject,
   createTask,
   deleteProjectCascade,
+  deleteTask as deleteTaskRecord,
   isProjectOwner,
   normalizeEmail,
   shareProject,
@@ -182,8 +182,9 @@ export default function ProjectsView() {
   const [priorityFilter, setPriorityFilter] = useState('ALL');
   const [overdueOnly, setOverdueOnly] = useState(false);
 
-  const userId = auth.currentUser?.uid;
-  const userEmail = auth.currentUser?.email ?? null;
+  const currentUser = getCurrentUser();
+  const userId = currentUser?.uid;
+  const userEmail = currentUser?.email ?? null;
 
   const activeProject = useMemo(
     () => projects.find((project) => project.id === activeProjectId) ?? null,
@@ -425,7 +426,7 @@ export default function ProjectsView() {
     if (!activeProjectId) return;
     if (!window.confirm(t('deleteTaskConfirm'))) return;
     try {
-      await deleteDoc(doc(db, 'projects', activeProjectId, 'tasks', task.id));
+      await deleteTaskRecord(activeProjectId, task.id);
       showToast({ message: t('taskDeleted'), type: 'info' });
     } catch (error) {
       showToast({ message: describeError(error), type: 'error' });

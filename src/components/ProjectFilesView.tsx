@@ -1,179 +1,230 @@
-import React, { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, addDoc, serverTimestamp, deleteDoc, doc } from 'firebase/firestore';
+import React, { useEffect, useRef, useState } from 'react';
+import { addDoc, collection, deleteDoc, doc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
-import { FileText, Upload, Trash2, Bot, Loader2 } from 'lucide-react';
-import { handleFirestoreError, OperationType } from '../lib/errorHandlers';
+import { Bot, FileText, Loader2, Trash2, Upload } from 'lucide-react';
+import { handleFirestoreError, OperationType, describeError } from '../lib/errorHandlers';
+import { useI18n } from '../context/I18nContext';
+import { useToast } from '../context/ToastContext';
+import { extractTasksFromFile } from '../lib/aiClient';
+import { createEvent, createTask, type Priority } from '../lib/appData';
+import { toDate } from '../lib/format';
 
 interface ProjectFile {
   id: string;
   name: string;
   content: string;
-  createdAt: any;
+  createdAt?: unknown;
 }
 
 interface ProjectFilesViewProps {
   projectId: string;
 }
 
+const MAX_FILE_BYTES = 500 * 1024; // Firestore documents cap at ~1 MB; keep headroom.
+const TEXT_EXTENSIONS = /\.(txt|md|markdown|csv|log|json)$/i;
+
 export default function ProjectFilesView({ projectId }: ProjectFilesViewProps) {
+  const { t, lang, locale } = useI18n();
+  const { showToast } = useToast();
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [isUploading, setIsUploading] = useState(false);
-  const [isProcessing, setIsProcessing] = useState<string | null>(null);
+  const [processingId, setProcessingId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!projectId) return;
-    const filesRef = collection(db, 'projects', projectId, 'files');
-    const unsubscribe = onSnapshot(query(filesRef), (snapshot) => {
-      setFiles(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as ProjectFile)));
-    }, (error) => handleFirestoreError(error, OperationType.GET, 'projects/files'));
+    setLoadError(null);
+    const unsubscribe = onSnapshot(
+      collection(db, 'projects', projectId, 'files'),
+      (snapshot) => {
+        const next = snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as object) })) as ProjectFile[];
+        next.sort((a, b) => (toDate(b.createdAt)?.getTime() ?? 0) - (toDate(a.createdAt)?.getTime() ?? 0));
+        setFiles(next);
+      },
+      (error) => setLoadError(handleFirestoreError(error, OperationType.GET, 'projects/files'))
+    );
     return () => unsubscribe();
   }, [projectId]);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const resetInput = () => {
+    if (inputRef.current) inputRef.current.value = '';
+  };
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
     if (!file) return;
+
+    if (file.size > MAX_FILE_BYTES) {
+      showToast({ message: t('fileTooLarge'), type: 'error' });
+      resetInput();
+      return;
+    }
+    if (!TEXT_EXTENSIONS.test(file.name) && !file.type.startsWith('text/')) {
+      showToast({ message: lang === 'fa' ? 'فقط فایل متنی مجاز است.' : 'Only text files are supported.', type: 'error' });
+      resetInput();
+      return;
+    }
 
     setIsUploading(true);
     const reader = new FileReader();
-    reader.onload = async (event) => {
+    reader.onerror = () => {
+      showToast({ message: describeError(reader.error), type: 'error' });
+      setIsUploading(false);
+      resetInput();
+    };
+    reader.onload = async (loadEvent) => {
       try {
-        const content = event.target?.result as string;
         await addDoc(collection(db, 'projects', projectId, 'files'), {
           name: file.name,
-          content: content,
-          createdAt: serverTimestamp()
+          content: String(loadEvent.target?.result ?? ''),
+          size: file.size,
+          uploadedBy: auth.currentUser?.email ?? '',
+          createdAt: serverTimestamp(),
         });
+        showToast({ message: t('fileUploaded'), type: 'success' });
       } catch (error) {
-        handleFirestoreError(error, OperationType.CREATE, 'projects/files');
+        showToast({ message: handleFirestoreError(error, OperationType.CREATE, 'projects/files'), type: 'error' });
       } finally {
         setIsUploading(false);
+        resetInput();
       }
     };
     reader.readAsText(file);
-    // clear input
-    e.target.value = '';
   };
 
-  const handleDelete = async (fileId: string) => {
+  const handleDelete = async (file: ProjectFile) => {
+    if (!window.confirm(t('deleteFileConfirm'))) return;
     try {
-      await deleteDoc(doc(db, 'projects', projectId, 'files', fileId));
+      await deleteDoc(doc(db, 'projects', projectId, 'files', file.id));
+      showToast({ message: t('fileDeleted'), type: 'info' });
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, 'projects/files');
+      showToast({ message: handleFirestoreError(error, OperationType.DELETE, 'projects/files'), type: 'error' });
     }
   };
 
   const extractTasks = async (file: ProjectFile) => {
-    setIsProcessing(file.id);
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    setProcessingId(file.id);
     try {
-      const response = await fetch('/api/ai/extract-tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          projectId: projectId,
-          fileContent: file.content,
-          fileName: file.name,
-          userId: auth.currentUser?.uid
-        })
+      const { tasks, events } = await extractTasksFromFile(file.content);
+
+      for (const task of tasks) {
+        await createTask({ projectId, title: task.title, priority: task.priority as Priority });
+      }
+      for (const event of events) {
+        await createEvent({
+          uid,
+          title: event.title,
+          startTime: event.startTime,
+          endTime: event.endTime,
+          location: event.location,
+          projectId,
+        });
+      }
+
+      showToast({
+        message: t('extractedSummary', { tasks: tasks.length, events: events.length }),
+        type: 'success',
       });
-      const data = await response.json();
-      
-      let countTasks = 0;
-      let countEvents = 0;
-
-      if (data.tasks && Array.isArray(data.tasks)) {
-         for (const t of data.tasks) {
-           await addDoc(collection(db, 'projects', projectId, 'tasks'), {
-             title: t.title,
-             status: 'TODO',
-             projectId: projectId,
-             priority: t.priority || 'Medium',
-             createdAt: serverTimestamp()
-           });
-           countTasks++;
-         }
-      }
-      
-      if (data.events && Array.isArray(data.events) && auth.currentUser?.uid) {
-         for (const e of data.events) {
-           await addDoc(collection(db, 'calendarEvents'), {
-             title: e.title,
-             startTime: e.startTime,
-             endTime: e.endTime || e.startTime,
-             location: e.location || '',
-             userId: auth.currentUser.uid,
-             createdAt: serverTimestamp()
-           });
-           countEvents++;
-         }
-      }
-
-      alert(`Successfully extracted ${countTasks} tasks and ${countEvents} events!`);
-    } catch (err) {
-      console.error(err);
-      alert("Failed to extract content.");
+    } catch (error) {
+      showToast({ message: describeError(error), type: 'error' });
     } finally {
-      setIsProcessing(null);
+      setProcessingId(null);
     }
   };
 
   return (
-    <div className="flex flex-col h-full overflow-hidden w-full max-w-5xl mx-auto py-8 px-6">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
+    <div className="flex flex-col h-full overflow-hidden w-full max-w-5xl mx-auto py-6 px-2 sm:px-6">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h2 className="text-2xl font-semibold text-gray-100 mb-2">Project Files & Knowledge Base</h2>
-          <p className="text-gray-400 text-sm">Upload meeting notes, specs, or logs. AI will use this content as context (RAG) and can extract tasks automatically.</p>
+          <h2 className="text-xl sm:text-2xl font-semibold text-gray-100 mb-2">{t('projectFiles')}</h2>
+          <p className="text-gray-400 text-sm max-w-2xl">{t('projectFilesBody')}</p>
         </div>
         <div className="shrink-0 w-full sm:w-auto">
-          <label className="flex items-center justify-center sm:justify-start gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition-colors cursor-pointer shadow-lg shadow-emerald-900/20 w-full sm:w-auto">
-            {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-            Upload Text File
-            <input type="file" accept=".txt,.md,.csv" className="hidden" onChange={handleFileUpload} disabled={isUploading} />
+          <label
+            className={`flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition-colors cursor-pointer shadow-lg shadow-emerald-900/20 w-full sm:w-auto ${
+              isUploading ? 'opacity-60 pointer-events-none' : ''
+            }`}
+          >
+            {isUploading ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : <Upload className="w-4 h-4" aria-hidden="true" />}
+            {t('uploadFile')}
+            <input
+              ref={inputRef}
+              type="file"
+              accept=".txt,.md,.markdown,.csv,.log,.json,text/plain"
+              className="hidden"
+              onChange={handleFileUpload}
+              disabled={isUploading}
+            />
           </label>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 overflow-y-auto pb-12">
-        {files.map(file => (
-          <div key={file.id} className="bg-gray-900/60 border border-gray-800 hover:border-gray-700 rounded-xl p-5 flex flex-col group transition-colors">
-            <div className="flex items-start justify-between mb-4">
+      {loadError && (
+        <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">{loadError}</div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 overflow-y-auto pb-12">
+        {files.map((file) => (
+          <div
+            key={file.id}
+            className="bg-gray-900/60 border border-gray-800 hover:border-gray-700 rounded-xl p-5 flex flex-col group transition-colors"
+          >
+            <div className="flex items-start justify-between gap-2 mb-4">
               <div className="flex items-center gap-3 overflow-hidden">
                 <div className="p-2.5 bg-gray-800 rounded-lg text-emerald-400 shrink-0">
-                  <FileText className="w-5 h-5" />
+                  <FileText className="w-5 h-5" aria-hidden="true" />
                 </div>
-                <h3 className="font-medium text-gray-200 truncate">{file.name}</h3>
+                <h3 className="font-medium text-gray-200 truncate" title={file.name}>
+                  {file.name}
+                </h3>
               </div>
-              <button onClick={() => handleDelete(file.id)} className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-400/10 rounded-md transition-colors opacity-0 group-hover:opacity-100">
-                <Trash2 className="w-4 h-4" />
+              <button
+                type="button"
+                onClick={() => handleDelete(file)}
+                aria-label={t('deleteFile')}
+                className="p-1.5 text-gray-500 hover:text-rose-400 hover:bg-rose-400/10 rounded-md transition-colors opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              >
+                <Trash2 className="w-4 h-4" aria-hidden="true" />
               </button>
             </div>
+
             <div className="flex-1 mb-4">
-              <p className="text-xs text-gray-500 line-clamp-3 bg-gray-950 p-3 rounded-lg font-mono">
-                {file.content}
+              <p className="text-xs text-gray-500 line-clamp-3 bg-gray-950 p-3 rounded-lg font-mono break-words">
+                {file.content || '—'}
               </p>
             </div>
-            <div className="mt-auto border-t border-gray-800/50 pt-4 flex justify-between items-center">
-               <span className="text-xs text-gray-500">
-                 {file.content.length} chars
-               </span>
-               <button 
-                 onClick={() => extractTasks(file)}
-                 disabled={isProcessing === file.id}
-                 className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-emerald-400 text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
-               >
-                 {isProcessing === file.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bot className="w-3.5 h-3.5" />}
-                 Extract Data
-               </button>
+
+            <div className="mt-auto border-t border-gray-800/50 pt-4 flex justify-between items-center gap-2">
+              <span className="text-xs text-gray-500 tabular-nums">
+                {(file.content?.length ?? 0).toLocaleString(locale)} {t('chars')}
+              </span>
+              <button
+                type="button"
+                onClick={() => extractTasks(file)}
+                disabled={processingId === file.id}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-emerald-400 text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
+              >
+                {processingId === file.id ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Bot className="w-3.5 h-3.5" aria-hidden="true" />
+                )}
+                {processingId === file.id ? t('extracting') : t('extractData')}
+              </button>
             </div>
           </div>
         ))}
 
         {files.length === 0 && !isUploading && (
-          <div className="col-span-full py-20 text-center border-2 border-dashed border-gray-800 rounded-2xl bg-gray-900/20">
+          <div className="col-span-full py-16 text-center border-2 border-dashed border-gray-800 rounded-2xl bg-gray-900/20">
             <div className="mx-auto w-16 h-16 rounded-full bg-gray-800/50 flex items-center justify-center mb-4">
-               <Upload className="w-8 h-8 text-gray-500" />
+              <Upload className="w-8 h-8 text-gray-500" aria-hidden="true" />
             </div>
-            <h3 className="text-lg font-medium text-gray-300 mb-2">No files uploaded yet</h3>
-            <p className="text-gray-500 max-w-sm mx-auto">Upload plain text or markdown files to extract action items and add context to your AI assistant.</p>
+            <h3 className="text-lg font-medium text-gray-300 mb-2">{t('noFiles')}</h3>
+            <p className="text-gray-500 max-w-sm mx-auto text-sm">{t('noFilesBody')}</p>
           </div>
         )}
       </div>

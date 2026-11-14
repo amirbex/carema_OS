@@ -1,51 +1,131 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Global Catch-all
-    match /{document=**} {
-      allow read, write: if false;
-    }
 
-    // Helper functions
+    /* ---------------------------------------------------------------------
+     * Helpers
+     * ------------------------------------------------------------------- */
     function isSignedIn() {
       return request.auth != null;
     }
-    
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+
+    function userEmail() {
+      return isSignedIn() && request.auth.token.email != null
+        ? request.auth.token.email.lower()
+        : '';
     }
 
-    // Users Collection
+    function isProjectMember(project) {
+      return isSignedIn()
+        && userEmail() != ''
+        && 'members' in project
+        && userEmail() in project.members;
+    }
+
+    function canAccessProject(project) {
+      return isSignedIn()
+        && (project.ownerId == request.auth.uid || isProjectMember(project));
+    }
+
+    function projectById(projectId) {
+      return get(/databases/$(database)/documents/projects/$(projectId)).data;
+    }
+
+    /* ---------------------------------------------------------------------
+     * Users — only the owner can read or write their profile.
+     * ------------------------------------------------------------------- */
     match /users/{userId} {
-      allow read, write: if isOwner(userId);
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
     }
-    
-    // Projects Collection (Root level for sharing)
+
+    /* ---------------------------------------------------------------------
+     * Projects
+     *
+     * SECURITY: the previous rules granted read/write on *every* project to
+     * *any* authenticated user, i.e. any visitor who created an account could
+     * read, edit or delete all other users' projects. Access is now limited to
+     * the owner and the members listed on the document.
+     * ------------------------------------------------------------------- */
     match /projects/{projectId} {
-      allow create: if isSignedIn();
-      // Allow read/update if signed in
-      allow read, update, delete: if isSignedIn();
-      
-      // Tasks Subcollection
+      allow read: if canAccessProject(resource.data);
+
+      allow create: if isSignedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && userEmail() != ''
+        && 'members' in request.resource.data
+        && userEmail() in request.resource.data.members
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 200;
+
+      // Members can read and work on the project, but only the owner may
+      // rename it, change sharing or delete it.
+      allow update: if isSignedIn()
+        && resource.data.ownerId == request.auth.uid
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 200;
+
+      allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+
+      /* Tasks ------------------------------------------------------------- */
       match /tasks/{taskId} {
-        allow read, write: if isSignedIn();
+        allow read: if canAccessProject(projectById(projectId));
+
+        allow create: if canAccessProject(projectById(projectId))
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 300;
+
+        allow update, delete: if canAccessProject(projectById(projectId));
+
+        /* Nested checklists and notes ------------------------------------ */
+        match /subtasks/{subtaskId} {
+          allow read, write: if canAccessProject(projectById(projectId));
+        }
+
+        match /notes/{noteId} {
+          allow read, create: if canAccessProject(projectById(projectId));
+          // Project members collaborate on notes; the author is recorded for
+          // display only (the UI lets any member clean up stale notes).
+          allow update, delete: if canAccessProject(projectById(projectId));
+        }
       }
-      
-      // Files Subcollection
+
+      /* Files ------------------------------------------------------------- */
       match /files/{fileId} {
-        allow read, write: if isSignedIn();
-      }
-      
-      // Nested subcollections under tasks
-      match /tasks/{taskId}/{nestedCollection}/{documentId} {
-        allow read, write: if isSignedIn();
+        allow read: if canAccessProject(projectById(projectId));
+
+        allow create: if canAccessProject(projectById(projectId))
+          && request.resource.data.name is string
+          && request.resource.data.content is string
+          // Keep documents well below Firestore's 1 MiB limit.
+          && request.resource.data.content.size() <= 900000;
+
+        allow update, delete: if canAccessProject(projectById(projectId));
       }
     }
-    
-    // Calendar Events Collection (Root level)
+
+    /* ---------------------------------------------------------------------
+     * Calendar events — strictly private to their owner.
+     * ------------------------------------------------------------------- */
     match /calendarEvents/{eventId} {
-      allow create: if isSignedIn();
-      allow read, update, delete: if isSignedIn();
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 300
+        && request.resource.data.startTime is string;
+
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    /* Nothing else is readable or writable. */
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

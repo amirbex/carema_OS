@@ -6,3 +6,18 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Tooling / editor
+.vite/
+.cache/
+*.tsbuildinfo
+.firebase/
+firebase-debug.log
+firestore-debug.log
+.idea/
+.vscode/
+*.local
+
+# Test artifacts
+test-results/
+playwright-report/

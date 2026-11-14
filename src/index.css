@@ -7,7 +7,33 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
-/* Custom scrollbars for clean minimal dashboard */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: #030712;
+  -webkit-font-smoothing: antialiased;
+  /* Persian digits read better with a slightly looser line height. */
+  font-feature-settings: "ss01";
+}
+
+/* Consistent, visible keyboard focus everywhere (previously many custom
+   buttons and selects had no focus indicator at all). */
+:focus-visible {
+  outline: 2px solid #34d399;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Custom scrollbars for a clean minimal dashboard */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -23,12 +49,97 @@
   background: rgba(75, 85, 99, 0.9);
 }
 
+/* `hide-scrollbar` was referenced by the project tab strip but never defined. */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* The app used `animate-in fade-in` (a tailwindcss-animate class that is not
+   installed). These replacements are self-contained. */
+@keyframes carema-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes carema-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes carema-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes carema-drawer-in {
+  from {
+    transform: translateX(var(--drawer-from, 24px));
+    opacity: 0.6;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.modal-backdrop {
+  animation: carema-fade-in 0.15s ease-out;
+}
+.modal-panel {
+  animation: carema-pop-in 0.18s ease-out;
+}
+.toast-enter {
+  animation: carema-slide-in 0.2s ease-out;
+}
+.drawer-enter {
+  animation: carema-drawer-in 0.25s ease-out;
+}
+[dir='ltr'] .drawer-enter {
+  --drawer-from: 24px;
+}
+[dir='rtl'] .drawer-enter {
+  --drawer-from: -24px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* Clean Print Optimization */
 @media print {
   aside,
   header,
   nav,
   button,
+  [role='dialog'],
+  [role='region'],
   .no-print {
     display: none !important;
   }
@@ -42,5 +153,9 @@
     border-color: #e5e7eb !important;
     background-color: transparent !important;
     box-shadow: none !important;
+  }
+  main {
+    overflow: visible !important;
+    height: auto !important;
   }
 }

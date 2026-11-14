@@ -302,6 +302,27 @@ export const translations: Record<string, Entry> = {
   chars: { fa: 'کاراکتر', en: 'chars' },
   deleteFile: { fa: 'حذف فایل', en: 'Delete file' },
   deleteFileConfirm: { fa: 'این فایل حذف شود؟', en: 'Delete this file?' },
+  demoBannerTitle: {
+    fa: 'حالت پیش‌نمایش — بدون سرور و بدون Firebase',
+    en: 'Preview mode — no server, no Firebase',
+  },
+  demoBannerBody: {
+    fa: 'داده‌های نمونه در همین مرورگر ذخیره می‌شوند؛ هوش مصنوعی و صدای زنده غیرفعال است.',
+    en: 'Sample data lives in this browser; AI chat and live voice are offline.',
+  },
+  demoReset: { fa: 'بازنشانی داده‌ها', en: 'Reset data' },
+  demoResetConfirm: {
+    fa: 'همهٔ تغییرات این مرورگر پاک و داده‌های نمونه بازنشانی شود؟',
+    en: 'Discard local changes and restore the sample data?',
+  },
+  demoNoSignOut: {
+    fa: 'در حالت پیش‌نمایش نیازی به ورود یا خروج نیست.',
+    en: 'Preview mode needs no sign-in or sign-out.',
+  },
+  demoFeatureDisabled: {
+    fa: 'این قابلیت به سرور نیاز دارد و در پیش‌نمایش استاتیک غیرفعال است.',
+    en: 'This feature needs the server and is disabled in the static preview.',
+  },
 };
 
 interface I18nContextType {

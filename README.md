@@ -30,6 +30,8 @@ npm start         # PORT پیش‌فرض ۳۰۰۰
 | `GEMINI_LIVE_MODEL` | `gemini-2.0-flash-live-001` | مدل گفتگوی صوتی (Live API) |
 | `PORT` | `3000` | پورت سرور |
 | `VITE_ENABLE_DEMO_LOGIN` | `true` | با `false` دکمهٔ اکانت دمو مخفی می‌شود |
+| `VITE_DEMO_MODE` | `false` | با `true` برنامه کاملاً آفلاین اجرا می‌شود: کاربر دمو، داده‌های نمونه در `localStorage`، بدون Firebase و بدون API |
+| `VITE_BASE` | `/` | مسیر پایهٔ دارایی‌ها؛ برای GitHub Pages مقدار `/<نام-مخزن>/` |
 
 ### اسکریپت‌ها
 
@@ -39,19 +41,55 @@ npm start         # PORT پیش‌فرض ۳۰۰۰
 | `npm run build` | بیلد کلاینت و باندل سرور |
 | `npm start` | اجرای بیلد تولیدی |
 | `npm run typecheck` / `npm run lint` | بررسی تایپ‌ها (strict) |
-| `npm test` | تست‌های واحد helperهای خالص |
+| `npm test` | تست‌های واحد helperهای خالص + لایهٔ دادهٔ دمو |
+| `npm run build:pages` | ساخت نسخهٔ استاتیک پیش‌نمایش (`VITE_DEMO_MODE`) + `404.html` + `.nojekyll` |
+| `npm run preview:pages` | سرو `dist/` دقیقاً مثل GitHub Pages روی `http://localhost:4173/carema_OS/` |
+| `npm run smoke:pages` | رندر واقعی نماها در jsdom و بررسی داده‌های نمونه |
 
 ---
 
-## ۲) معماری
+## ۲) پیش‌نمایش روی GitHub Pages (بدون API و بدون Firebase)
+
+نسخهٔ آنلاین: <https://amirbex.github.io/carema_OS/>
+
+این نسخه یک **پیش‌نمایش استاتیک** است؛ برای دیدن ظاهر و کارکرد برنامه به هیچ سرور، `GEMINI_API_KEY` یا پروژهٔ Firebase نیاز ندارد:
+
+- `VITE_DEMO_MODE=true` → ورود با کاربر ساختگی `demo@carema.app` انجام می‌شود (صفحهٔ لاگین نمایش داده نمی‌شود).
+- داده‌ها از `src/lib/demoStore.ts` می‌آیند: دو پروژه، ۶ وظیفه، زیرکار، یادداشت، فایل و رویدادهای تقویم. همهٔ تغییرات در `localStorage` همان مرورگر ذخیره می‌شوند و با دکمهٔ «بازنشانی داده‌ها» در نوار بالای صفحه پاک می‌شوند.
+- چت با دستیار به‌صورت محلی و قاعده‌محور پاسخ می‌دهد (`src/lib/demoAssistant.ts`) و امکان ساخت پروژه/وظیفه/رویداد نمایشی را می‌دهد؛ «صفحه‌کلید استخراج داده» فایل‌ها هم آفلاین کار می‌کند.
+- دستیار صوتی زنده (WebSocket `/live`) در این حالت غیرفعال است و پیام شفاف نشان می‌دهد.
+- مسیر دارایی‌ها با `VITE_BASE=/carema_OS/` ساخته می‌شود و `404.html` نسخهٔ کپی `index.html` است تا لینک‌های عمیق (مثل `/dashboard/timeline`) ۴۰۴ نشوند.
+
+### فعال‌سازی در GitHub (یک‌بار)
+
+1. **Settings → Pages → Build and deployment → Source** را روی **GitHub Actions** بگذارید (نه «Deploy from a branch» و نه پوشهٔ `/docs`).
+2. فایل `.github/workflows/deploy-pages.yml` با هر push روی `main` به‌طور خودکار بیلد و منتشر می‌کند (یا از تب Actions دستی اجرا کنید).
+3. اگر سایت قبلاً با منبع اشتباه منتشر شده، یک‌بار **Unpublish site** کنید و بعد از اجرای موفق workflow دوباره باز کنید.
+
+### بررسی محلی (بدون GitHub)
+
+```bash
+npm run build:pages     # base=/carema_OS/ + demo mode + 404.html
+npm run preview:pages   # http://localhost:4173/carema_OS/
+npm run smoke:pages     # رندر واقعی نماها و بررسی داده‌های نمونه
+```
+
+جزئیات کامل: [`docs/GITHUB_PAGES.md`](docs/GITHUB_PAGES.md)
+
+---
+
+## ۳) معماری
 
 ```
 server.ts                  Express + Vite middleware + Gemini + WebSocket /live
 src/
   App.tsx                  مسیرها، احراز هویت، ErrorBoundary، lazy loading
   lib/
-    firebase.ts            مقداردهی Firebase + probe اتصال
-    appData.ts             لایهٔ داده (پروژه/وظیفه/رویداد/فایل/کانتکست AI)
+    firebase.ts            مقداردهی Firebase + probe اتصال (+ حالت دمو: بدون مقداردهی)
+    appData.ts             لایهٔ داده (پروژه/وظیفه/زیرکار/یادداشت/فایل/رویداد/کانتکست AI)
+    demoStore.ts           پایگاه دادهٔ نمونه در localStorage برای پیش‌نمایش استاتیک
+    demoAssistant.ts       پاسخ‌دهندهٔ محلی چت در حالت پیش‌نمایش
+    localExtraction.ts     استخراج وظیفه از فایل به‌صورت آفلاین
     aiClient.ts            کلاینت API با timeout/abort و خطاهای نوع‌دار
     format.ts              توابع خالص (تاریخ، CSV، ایمن‌سازی نام فایل…)
     errorHandlers.ts       پیام‌های دوستانه + لاگ بدون دادهٔ شخصی
@@ -88,7 +126,7 @@ calendarEvents/{eventId}                   userId
 
 ---
 
-## ۳) اصلاحات مهم انجام‌شده
+## ۴) اصلاحات مهم انجام‌شده
 
 ### باگ‌های بحرانی
 - **مسیرهای SPA در تولید ۴۰۴ می‌شدند**: الگوی `app.get('*all')` در Express 4 معنا ندارد؛ با fallback سازگار با Express 4/5 جایگزین شد.
@@ -120,7 +158,7 @@ calendarEvents/{eventId}                   userId
 
 ---
 
-## ۴) محدودیت‌های فعلی
+## ۵) محدودیت‌های فعلی
 
 - Firestore در بستر اجرا باید در دسترس باشد؛ بدون شبکه، ورود و داده‌ها کار نمی‌کنند.
 - اعتبارسنجی توکن Firebase در سرور انجام نمی‌شود (نیازمند `firebase-admin`)؛ برای محیط عمومی توصیه می‌شود.
@@ -130,7 +168,7 @@ calendarEvents/{eventId}                   userId
 
 ---
 
-## ۵) نقشهٔ راه پیشنهادی
+## ۶) نقشهٔ راه پیشنهادی
 
 ۱. **احراز هویت سمت سرور** با `firebase-admin` و توکن ID در هدر `Authorization`؛ اعتبارسنجی در `/api/ai/*` و `/live` + سهمیهٔ مصرف به‌ازای هر کاربر.
 ۲. **تست خودکار کامل**: Vitest + Testing Library برای کامپوننت‌ها، Playwright برای مسیرهای اصلی (ورود → ساخت پروژه → وظیفه → چت).

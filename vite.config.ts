@@ -7,6 +7,10 @@ export default defineConfig(() => {
   const hmrDisabled = process.env.DISABLE_HMR === 'true';
 
   return {
+    // GitHub Pages serves the app from `/<repo>/`, so the build needs a
+    // matching asset prefix. `VITE_BASE` lets CI set it without affecting
+    // local dev (which keeps `/`).
+    base: process.env.VITE_BASE || '/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {

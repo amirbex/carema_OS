@@ -16,11 +16,12 @@ import {
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { auth } from '../lib/firebase';
+import { getCurrentUser, IS_DEMO } from '../lib/firebase';
 import { useI18n } from '../context/I18nContext';
 import { useToast } from '../context/ToastContext';
 import { AiRequestError, requestAiReply, type AiProposalAction } from '../lib/aiClient';
 import { createEvent, createProject, createTask, fetchWorkspaceContext, updateTask } from '../lib/appData';
+import { buildDemoReply } from '../lib/demoAssistant';
 import { pcmToBase64, PcmPlayer } from '../lib/audioUtils';
 import { createId } from '../lib/format';
 import { logActivity } from '../lib/activityLogger';
@@ -66,7 +67,7 @@ export default function ChatView() {
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
-  const userId = auth.currentUser?.uid;
+  const userId = getCurrentUser()?.uid;
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -127,6 +128,13 @@ export default function ChatView() {
   const startLiveSession = async () => {
     if (!userId || isLiveActive || isLiveLoading) return;
 
+    if (IS_DEMO) {
+      // The live voice bridge runs on the Express server (WebSocket + Gemini
+      // Live API), which does not exist in the static preview.
+      showToast({ message: t('demoFeatureDisabled'), type: 'info' });
+      return;
+    }
+
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       showToast({ message: t('liveUnsupported'), type: 'error' });
       return;
@@ -134,7 +142,7 @@ export default function ChatView() {
 
     setIsLiveLoading(true);
     try {
-      const context = await fetchWorkspaceContext(userId, auth.currentUser?.email);
+      const context = await fetchWorkspaceContext(userId, getCurrentUser()?.email);
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const ws = new WebSocket(`${protocol}//${window.location.host}/live`);
@@ -249,19 +257,21 @@ export default function ChatView() {
     abortRef.current = controller;
 
     try {
-      const context = await fetchWorkspaceContext(userId, auth.currentUser?.email);
+      const context = await fetchWorkspaceContext(userId, getCurrentUser()?.email);
       const history = [...messages, userMessage]
         .filter((message) => message.type !== 'system')
         .slice(-MAX_HISTORY)
         .map((message) => ({ role: message.type === 'user' ? ('user' as const) : ('agent' as const), content: message.content }));
 
-      const reply = await requestAiReply({
-        uid: userId,
-        input: content,
-        history,
-        context,
-        signal: controller.signal,
-      });
+      const reply = IS_DEMO
+        ? buildDemoReply(content, context, lang)
+        : await requestAiReply({
+            uid: userId,
+            input: content,
+            history,
+            context,
+            signal: controller.signal,
+          });
 
       if (!isMountedRef.current) return;
 
@@ -336,7 +346,7 @@ export default function ChatView() {
         const projectId = await createProject({
           name: params.name || 'New Project',
           uid: userId,
-          email: auth.currentUser?.email,
+          email: getCurrentUser()?.email,
           category: params.category || 'General',
         });
         if (Array.isArray(params.tasks)) {

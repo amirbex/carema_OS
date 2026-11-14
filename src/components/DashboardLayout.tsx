@@ -12,8 +12,7 @@ import {
   Search,
   X,
 } from 'lucide-react';
-import { signOut } from 'firebase/auth';
-import { auth } from '../lib/firebase';
+import { getCurrentUser, IS_DEMO, signOutUser } from '../lib/firebase';
 import { subscribeProjects, type Project } from '../lib/appData';
 import { useI18n } from '../context/I18nContext';
 import { useFocus } from '../context/FocusContext';
@@ -22,6 +21,7 @@ import { FocusHeaderWidget, FocusTimerModal } from './FocusTimerWidget';
 import { CommandPaletteModal } from './CommandPaletteModal';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { ActivityDrawer } from './ActivityDrawer';
+import DemoBanner from './DemoBanner';
 import { initials } from '../lib/format';
 import { describeError } from '../lib/errorHandlers';
 
@@ -38,7 +38,7 @@ export default function DashboardLayout() {
   const [isActivityOpen, setIsActivityOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
 
-  const user = auth.currentUser;
+  const user = getCurrentUser();
 
   // Projects feed the command palette (it previously received an empty array,
   // so "search projects" silently never matched anything).
@@ -115,7 +115,7 @@ export default function DashboardLayout() {
 
   const handleSignOut = async () => {
     try {
-      await signOut(auth);
+      await signOutUser();
       navigate('/', { replace: true });
     } catch (error) {
       showToast({ message: describeError(error), type: 'error' });
@@ -230,14 +230,18 @@ export default function DashboardLayout() {
             <kbd className="text-[10px] font-mono bg-gray-800 px-1.5 py-0.5 rounded text-gray-400">?</kbd>
           </button>
 
-          <button
-            type="button"
-            onClick={handleSignOut}
-            className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-rose-400 hover:bg-rose-500/10 w-full transition-colors"
-          >
-            <LogOut className="w-4 h-4" aria-hidden="true" />
-            <span>{t('signOut')}</span>
-          </button>
+          {IS_DEMO ? (
+            <p className="px-3 py-2 text-[11px] leading-relaxed text-gray-500">{t('demoNoSignOut')}</p>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-rose-400 hover:bg-rose-500/10 w-full transition-colors"
+            >
+              <LogOut className="w-4 h-4" aria-hidden="true" />
+              <span>{t('signOut')}</span>
+            </button>
+          )}
         </div>
       </aside>
 
@@ -298,6 +302,8 @@ export default function DashboardLayout() {
             </button>
           </div>
         </header>
+
+        {IS_DEMO && <DemoBanner />}
 
         <main id="main-content" className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
           <Outlet />

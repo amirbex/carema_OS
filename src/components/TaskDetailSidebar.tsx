@@ -1,16 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  updateDoc,
-} from 'firebase/firestore';
-import { db, auth } from '../lib/firebase';
+import { getCurrentUser } from '../lib/firebase';
 import { Check, CheckSquare, Loader2, MessageSquare, Plus, Target, Trash2, X } from 'lucide-react';
 import { handleFirestoreError, OperationType } from '../lib/errorHandlers';
 import { useFocus } from '../context/FocusContext';
@@ -18,7 +7,15 @@ import { useI18n } from '../context/I18nContext';
 import { useToast } from '../context/ToastContext';
 import { useSubtasks } from '../hooks/useSubtasks';
 import { initials, toDate } from '../lib/format';
-import { PRIORITIES, TASK_STATUSES } from '../lib/appData';
+import {
+  PRIORITIES,
+  TASK_STATUSES,
+  addNoteRecord,
+  deleteNoteRecord,
+  subscribeNotes,
+  updateTask,
+  type Note,
+} from '../lib/appData';
 
 interface SidebarTask {
   id: string;
@@ -35,13 +32,6 @@ interface TaskDetailSidebarProps {
   /** Parent project id; falls back to the task's own projectId. */
   projectId?: string | null;
   onClose: () => void;
-}
-
-interface Note {
-  id: string;
-  content?: string;
-  author?: string;
-  createdAt?: unknown;
 }
 
 export default function TaskDetailSidebar({ task, projectId, onClose }: TaskDetailSidebarProps) {
@@ -85,14 +75,11 @@ export default function TaskDetailSidebar({ task, projectId, onClose }: TaskDeta
 
   useEffect(() => {
     if (!task || !resolvedProjectId) return;
-    const notesQuery = query(
-      collection(db, 'projects', resolvedProjectId, 'tasks', task.id, 'notes'),
-      orderBy('createdAt', 'desc')
-    );
-    const unsubscribe = onSnapshot(
-      notesQuery,
-      (snapshot) => setNotes(snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as object) })) as Note[]),
-      (error) => showToast({ message: handleFirestoreError(error, OperationType.LIST, 'tasks/notes'), type: 'error' })
+    const unsubscribe = subscribeNotes(
+      resolvedProjectId,
+      task.id,
+      setNotes,
+      (message) => showToast({ message, type: 'error' })
     );
     return () => unsubscribe();
   }, [task, resolvedProjectId, showToast]);
@@ -100,7 +87,7 @@ export default function TaskDetailSidebar({ task, projectId, onClose }: TaskDeta
   const patchTask = async (patch: Record<string, unknown>) => {
     if (!task || !resolvedProjectId) return;
     try {
-      await updateDoc(doc(db, 'projects', resolvedProjectId, 'tasks', task.id), patch as Record<string, any>);
+      await updateTask(resolvedProjectId, task.id, patch);
     } catch (error) {
       showToast({ message: handleFirestoreError(error, OperationType.UPDATE, 'projects/tasks'), type: 'error' });
     }
@@ -125,11 +112,7 @@ export default function TaskDetailSidebar({ task, projectId, onClose }: TaskDeta
     if (!newNote.trim() || !task || !resolvedProjectId) return;
     setIsSavingNote(true);
     try {
-      await addDoc(collection(db, 'projects', resolvedProjectId, 'tasks', task.id, 'notes'), {
-        content: newNote.trim(),
-        author: auth.currentUser?.email || 'Unknown',
-        createdAt: serverTimestamp(),
-      });
+      await addNoteRecord(resolvedProjectId, task.id, newNote.trim(), getCurrentUser()?.email || 'Unknown');
       setNewNote('');
     } catch (error) {
       showToast({ message: handleFirestoreError(error, OperationType.CREATE, 'tasks/notes'), type: 'error' });
@@ -141,7 +124,7 @@ export default function TaskDetailSidebar({ task, projectId, onClose }: TaskDeta
   const deleteNote = async (noteId: string) => {
     if (!task || !resolvedProjectId) return;
     try {
-      await deleteDoc(doc(db, 'projects', resolvedProjectId, 'tasks', task.id, 'notes', noteId));
+      await deleteNoteRecord(resolvedProjectId, task.id, noteId);
     } catch (error) {
       showToast({ message: handleFirestoreError(error, OperationType.DELETE, 'tasks/notes'), type: 'error' });
     }

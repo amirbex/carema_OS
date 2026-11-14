@@ -20,4 +20,5 @@ firestore-debug.log
 
 # Test artifacts
 test-results/
+.smoke/
 playwright-report/

@@ -1,20 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { addDoc, collection, deleteDoc, doc, onSnapshot, serverTimestamp } from 'firebase/firestore';
-import { db, auth } from '../lib/firebase';
+import { getCurrentUser, IS_DEMO } from '../lib/firebase';
 import { Bot, FileText, Loader2, Trash2, Upload } from 'lucide-react';
 import { handleFirestoreError, OperationType, describeError } from '../lib/errorHandlers';
 import { useI18n } from '../context/I18nContext';
 import { useToast } from '../context/ToastContext';
 import { extractTasksFromFile } from '../lib/aiClient';
-import { createEvent, createTask, type Priority } from '../lib/appData';
-import { toDate } from '../lib/format';
-
-interface ProjectFile {
-  id: string;
-  name: string;
-  content: string;
-  createdAt?: unknown;
-}
+import { extractTasksLocally } from '../lib/localExtraction';
+import {
+  addProjectFile,
+  createEvent,
+  createTask,
+  deleteProjectFile,
+  subscribeProjectFiles,
+  type Priority,
+  type ProjectFile,
+} from '../lib/appData';
 
 interface ProjectFilesViewProps {
   projectId: string;
@@ -35,15 +35,7 @@ export default function ProjectFilesView({ projectId }: ProjectFilesViewProps) {
   useEffect(() => {
     if (!projectId) return;
     setLoadError(null);
-    const unsubscribe = onSnapshot(
-      collection(db, 'projects', projectId, 'files'),
-      (snapshot) => {
-        const next = snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as object) })) as ProjectFile[];
-        next.sort((a, b) => (toDate(b.createdAt)?.getTime() ?? 0) - (toDate(a.createdAt)?.getTime() ?? 0));
-        setFiles(next);
-      },
-      (error) => setLoadError(handleFirestoreError(error, OperationType.GET, 'projects/files'))
-    );
+    const unsubscribe = subscribeProjectFiles(projectId, setFiles, (message) => setLoadError(message));
     return () => unsubscribe();
   }, [projectId]);
 
@@ -75,12 +67,12 @@ export default function ProjectFilesView({ projectId }: ProjectFilesViewProps) {
     };
     reader.onload = async (loadEvent) => {
       try {
-        await addDoc(collection(db, 'projects', projectId, 'files'), {
+        await addProjectFile({
+          projectId,
           name: file.name,
           content: String(loadEvent.target?.result ?? ''),
           size: file.size,
-          uploadedBy: auth.currentUser?.email ?? '',
-          createdAt: serverTimestamp(),
+          uploadedBy: getCurrentUser()?.email ?? '',
         });
         showToast({ message: t('fileUploaded'), type: 'success' });
       } catch (error) {
@@ -96,7 +88,7 @@ export default function ProjectFilesView({ projectId }: ProjectFilesViewProps) {
   const handleDelete = async (file: ProjectFile) => {
     if (!window.confirm(t('deleteFileConfirm'))) return;
     try {
-      await deleteDoc(doc(db, 'projects', projectId, 'files', file.id));
+      await deleteProjectFile(projectId, file.id);
       showToast({ message: t('fileDeleted'), type: 'info' });
     } catch (error) {
       showToast({ message: handleFirestoreError(error, OperationType.DELETE, 'projects/files'), type: 'error' });
@@ -104,11 +96,16 @@ export default function ProjectFilesView({ projectId }: ProjectFilesViewProps) {
   };
 
   const extractTasks = async (file: ProjectFile) => {
-    const uid = auth.currentUser?.uid;
+    const uid = getCurrentUser()?.uid;
     if (!uid) return;
     setProcessingId(file.id);
     try {
-      const { tasks, events } = await extractTasksFromFile(file.content);
+      const { tasks, events } = IS_DEMO
+        ? {
+            tasks: extractTasksLocally(file.content),
+            events: [] as Array<{ title: string; startTime: string; endTime?: string; location?: string }>,
+          }
+        : await extractTasksFromFile(file.content);
 
       for (const task of tasks) {
         await createTask({ projectId, title: task.title, priority: task.priority as Priority });
